@@ -15,11 +15,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ru.dohod.moidohod.MoidohodApp
 import ru.dohod.moidohod.data.entity.TaskType
+import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.*
 
@@ -38,9 +41,7 @@ fun TasksScreen(
     val tabs = listOf("Типы заявок", "Выполненные")
 
     Scaffold(
-        topBar = {
-            TopAppBar(title = { Text("Заявки и баллы") })
-        }
+        topBar = { TopAppBar(title = { Text("Заявки и баллы") }) }
     ) { paddingValues ->
         Column(
             modifier = Modifier
@@ -56,46 +57,45 @@ fun TasksScreen(
                     )
                 }
             }
-
             when (selectedTabIndex) {
                 0 -> TaskTypesTab(viewModel, uiState.taskTypes)
                 1 -> CompletedTasksTab(viewModel, uiState)
             }
         }
     }
+
+    if (viewModel.showDeleteWarning) {
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelDelete() },
+            title = { Text("Невозможно удалить тип") },
+            text = { Text("Сначала удалите все выполненные заявки этого типа.") },
+            confirmButton = {
+                TextButton(onClick = { viewModel.cancelDelete() }) { Text("OK") }
+            }
+        )
+    }
 }
 
-// ==================== ВКЛАДКА "ТИПЫ ЗАЯВОК" ====================
 @Composable
-fun TaskTypesTab(
-    viewModel: TasksViewModel,
-    taskTypes: List<TaskType>
-) {
+fun TaskTypesTab(viewModel: TasksViewModel, taskTypes: List<TaskType>) {
     var showAddDialog by remember { mutableStateOf(false) }
     var editingTaskType by remember { mutableStateOf<TaskType?>(null) }
-    var showDeleteConfirmation by remember { mutableStateOf<TaskType?>(null) }
 
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         items(taskTypes) { type ->
-            Card(
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            Card(modifier = Modifier.fillMaxWidth()) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
                         Text(text = type.name, style = MaterialTheme.typography.titleMedium)
                         Text(
-                            text = "${type.pointsPerUnit} балл(ов) за заявку",
+                            text = "${String.format("%.2f", type.pointsPerUnit)} балл(ов) за заявку",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -104,24 +104,20 @@ fun TaskTypesTab(
                         IconButton(onClick = { editingTaskType = type }) {
                             Icon(Icons.Default.Edit, contentDescription = "Редактировать")
                         }
-                        IconButton(onClick = { showDeleteConfirmation = type }) {
+                        IconButton(onClick = { viewModel.deleteTaskType(type) }) {
                             Icon(Icons.Default.Delete, contentDescription = "Удалить")
                         }
                     }
                 }
             }
         }
-
         item {
             Spacer(modifier = Modifier.height(16.dp))
             FloatingActionButton(
                 onClick = { showAddDialog = true },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Add, contentDescription = "Добавить")
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Добавить тип заявки")
@@ -130,7 +126,6 @@ fun TaskTypesTab(
         }
     }
 
-    // Диалог добавления
     if (showAddDialog) {
         AddEditTaskTypeDialog(
             onDismiss = { showAddDialog = false },
@@ -141,7 +136,6 @@ fun TaskTypesTab(
         )
     }
 
-    // Диалог редактирования
     editingTaskType?.let { type ->
         AddEditTaskTypeDialog(
             initialName = type.name,
@@ -153,38 +147,14 @@ fun TaskTypesTab(
             }
         )
     }
-
-    // Диалог подтверждения удаления
-    showDeleteConfirmation?.let { type ->
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirmation = null },
-            title = { Text("Удалить тип заявки?") },
-            text = { Text("Вы уверены, что хотите удалить «${type.name}»?") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.deleteTaskType(type)
-                        showDeleteConfirmation = null
-                    }
-                ) {
-                    Text("Удалить", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirmation = null }) {
-                    Text("Отмена")
-                }
-            }
-        )
-    }
 }
 
 @Composable
 fun AddEditTaskTypeDialog(
     initialName: String = "",
-    initialPoints: Int = 1,
+    initialPoints: Double = 1.0,
     onDismiss: () -> Unit,
-    onSave: (name: String, points: Int) -> Unit
+    onSave: (name: String, points: Double) -> Unit
 ) {
     var name by remember { mutableStateOf(initialName) }
     var points by remember { mutableStateOf(initialPoints.toString()) }
@@ -206,46 +176,31 @@ fun AddEditTaskTypeDialog(
                     onValueChange = { points = it },
                     label = { Text("Баллов за заявку") },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
                 )
             }
         },
         confirmButton = {
             TextButton(
                 onClick = {
-                    val pointsInt = points.toIntOrNull() ?: 1
-                    if (name.isNotBlank()) {
-                        onSave(name, pointsInt)
-                    }
+                    val pointsDouble = points.toDoubleOrNull() ?: 1.0
+                    if (name.isNotBlank()) onSave(name, pointsDouble)
                 }
-            ) {
-                Text("Сохранить")
-            }
+            ) { Text("Сохранить") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Отмена")
-            }
+            TextButton(onClick = onDismiss) { Text("Отмена") }
         }
     )
 }
 
-// ==================== ВКЛАДКА "ВЫПОЛНЕННЫЕ ЗАЯВКИ" ====================
 @Composable
-fun CompletedTasksTab(
-    viewModel: TasksViewModel,
-    uiState: TasksUiState
-) {
+fun CompletedTasksTab(viewModel: TasksViewModel, uiState: TasksUiState) {
     var showAddDialog by remember { mutableStateOf(false) }
     val monthFormatter = DateTimeFormatter.ofPattern("LLLL yyyy", Locale("ru"))
     val yearMonth = uiState.selectedMonth
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-        // Шапка с переключением месяца
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -265,22 +220,17 @@ fun CompletedTasksTab(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Сумма баллов за месяц
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer
-            )
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
         ) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text("Всего баллов:", fontWeight = FontWeight.Bold)
                 Text(
-                    text = uiState.totalPointsForMonth.toString(),
+                    text = String.format("%.2f", uiState.totalPointsForMonth),
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -289,9 +239,8 @@ fun CompletedTasksTab(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Список выполненных заявок (занимает всё оставшееся место)
         LazyColumn(
-            modifier = Modifier.weight(1f),   // ← ключевое исправление
+            modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (uiState.completedTasks.isEmpty()) {
@@ -300,24 +249,15 @@ fun CompletedTasksTab(
                         modifier = Modifier.fillMaxWidth().height(200.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            "Нет выполненных заявок за этот месяц",
-                            color = MaterialTheme.colorScheme.outline
-                        )
+                        Text("Нет выполненных заявок за этот месяц", color = MaterialTheme.colorScheme.outline)
                     }
                 }
             } else {
                 val tasksByDate = uiState.completedTasks.groupBy { it.date }
                 tasksByDate.forEach { (date, tasks) ->
                     item {
-                        Card(
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp)
-                            ) {
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
                                 Text(
                                     text = date,
                                     style = MaterialTheme.typography.labelLarge,
@@ -326,11 +266,7 @@ fun CompletedTasksTab(
                                 Spacer(modifier = Modifier.height(8.dp))
                                 tasks.forEach { task ->
                                     val taskType = uiState.taskTypes.find { it.id == task.taskTypeId }
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 4.dp)
-                                    ) {
+                                    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -342,7 +278,7 @@ fun CompletedTasksTab(
                                             )
                                             Row {
                                                 Text(
-                                                    text = "${task.totalPoints} баллов",
+                                                    text = "${String.format("%.2f", task.totalPoints)} баллов",
                                                     fontWeight = FontWeight.Bold,
                                                     color = MaterialTheme.colorScheme.primary,
                                                     modifier = Modifier.padding(end = 8.dp)
@@ -367,12 +303,6 @@ fun CompletedTasksTab(
                                                 modifier = Modifier.padding(top = 2.dp)
                                             )
                                         }
-                                        Text(
-                                            text = task.date,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.outline,
-                                            modifier = Modifier.padding(top = 2.dp)
-                                        )
                                     }
                                     HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
                                 }
@@ -385,17 +315,11 @@ fun CompletedTasksTab(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Кнопка добавления выполненной заявки (всегда видна внизу)
         FloatingActionButton(
             onClick = { showAddDialog = true },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp)
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
         ) {
-            Row(
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Add, contentDescription = "Добавить")
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("Добавить выполненную заявку")
@@ -425,68 +349,56 @@ fun AddCompletedTaskDialog(
     var selectedTaskType by remember { mutableStateOf(taskTypes.firstOrNull()) }
     var quantity by remember { mutableStateOf("1") }
     var description by remember { mutableStateOf("") }
-    var dateText by remember { mutableStateOf(LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)) }
+    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
+    var showDatePicker by remember { mutableStateOf(false) }
+    val dateFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy")
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Добавить выполненную заявку") },
         text = {
             Column {
-                // Радиокнопки для выбора типа заявки
                 Text("Тип заявки", style = MaterialTheme.typography.labelMedium)
                 taskTypes.forEach { type ->
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .selectable(
-                                selected = selectedTaskType == type,
-                                onClick = { selectedTaskType = type }
-                            )
-                    ) {
-                        RadioButton(
+                        modifier = Modifier.fillMaxWidth().selectable(
                             selected = selectedTaskType == type,
-                            onClick = null // null because we handle click on row
+                            onClick = { selectedTaskType = type }
                         )
+                    ) {
+                        RadioButton(selected = selectedTaskType == type, onClick = null)
                         Text(
-                            text = "${type.name} (${type.pointsPerUnit} балл)",
+                            text = "${type.name} (${String.format("%.2f", type.pointsPerUnit)} балл)",
                             modifier = Modifier.padding(start = 8.dp)
                         )
                     }
                 }
-
                 Spacer(modifier = Modifier.height(8.dp))
-
-                // Поле для описания (адрес, номер заявки и т.п.)
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
                     label = { Text("Описание / Адрес / Номер") },
                     singleLine = false,
-                    maxLines = 2
+                    maxLines = 2,
+                    modifier = Modifier.fillMaxWidth()
                 )
-
                 Spacer(modifier = Modifier.height(8.dp))
-
-                // Количество
                 OutlinedTextField(
                     value = quantity,
                     onValueChange = { quantity = it },
                     label = { Text("Количество") },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
                 )
-
                 Spacer(modifier = Modifier.height(8.dp))
-
-                // Дата
-                OutlinedTextField(
-                    value = dateText,
-                    onValueChange = { dateText = it },
-                    label = { Text("Дата (ГГГГ-ММ-ДД)") },
-                    singleLine = true,
-                    placeholder = { Text("2026-02-13") }
-                )
+                OutlinedButton(
+                    onClick = { showDatePicker = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Выбрать дату: ${selectedDate.format(dateFormatter)}")
+                }
             }
         },
         confirmButton = {
@@ -494,22 +406,34 @@ fun AddCompletedTaskDialog(
                 onClick = {
                     if (selectedTaskType != null) {
                         val q = quantity.toIntOrNull() ?: 1
-                        try {
-                            val date = LocalDate.parse(dateText)
-                            onSave(date, selectedTaskType!!, q, description.trim())
-                        } catch (e: Exception) {
-                            println("Ошибка парсинга даты: ${dateText}")
-                        }
+                        onSave(selectedDate, selectedTaskType!!, q, description.trim())
                     }
-                }
-            ) {
-                Text("Сохранить")
-            }
+                },
+                enabled = selectedTaskType != null && quantity.toIntOrNull() != null
+            ) { Text("Сохранить") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Отмена")
-            }
+            TextButton(onClick = onDismiss) { Text("Отмена") }
         }
     )
+
+    if (showDatePicker) {
+        val datePickerState = rememberDatePickerState(
+            initialSelectedDateMillis = selectedDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        )
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    datePickerState.selectedDateMillis?.let { millis ->
+                        selectedDate = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate()
+                    }
+                    showDatePicker = false
+                }) { Text("OK") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("Отмена") }
+            }
+        ) { DatePicker(state = datePickerState) }
+    }
 }

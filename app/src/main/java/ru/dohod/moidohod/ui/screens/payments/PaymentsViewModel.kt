@@ -5,7 +5,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import ru.dohod.moidohod.data.entity.*
@@ -28,7 +27,8 @@ data class UpcomingPayment(
     val date: LocalDate,
     val amount: Double,
     val description: String = "",
-    val isManual: Boolean = false
+    val isManual: Boolean = false,
+    val isPast: Boolean = false
 )
 
 data class PaymentHistoryGroup(
@@ -61,29 +61,34 @@ class PaymentsViewModel(
         viewModelScope.launch {
             uiState = uiState.copy(isLoading = true)
 
-            val settings = settingsRepository.getSettings().first()
-                ?: Settings().also { settingsRepository.saveSettings(it) }
+            try {
+                val settings = settingsRepository.getSettings().first()
+                    ?: Settings().also { settingsRepository.saveSettings(it) }
 
-            loadPaymentHistory()
-            val upcoming = calculateUpcomingPayments(settings)
-            uiState = uiState.copy(upcomingPayments = upcoming, isLoading = false)
-        }
-    }
-
-    private suspend fun loadPaymentHistory() {
-        paymentRepository.getAllPayments().collect { payments ->
-            val grouped = payments
-                .filter { it.isActual }
-                .groupBy { YearMonth.parse(it.date.substring(0, 7)) }
-                .map { (month, list) ->
-                    PaymentHistoryGroup(
-                        month = month,
-                        payments = list.sortedByDescending { it.date },
-                        total = list.sumOf { it.amount }
-                    )
+                launch {
+                    paymentRepository.getAllPayments().collect { payments ->
+                        val grouped = payments
+                            .filter { it.isActual }
+                            .groupBy { YearMonth.parse(it.date.substring(0, 7)) }
+                            .map { (month, list) ->
+                                PaymentHistoryGroup(
+                                    month = month,
+                                    payments = list.sortedByDescending { it.date },
+                                    total = list.sumOf { it.amount }
+                                )
+                            }
+                            .sortedByDescending { it.month }
+                        uiState = uiState.copy(paymentHistory = grouped)
+                    }
                 }
-                .sortedByDescending { it.month }
-            uiState = uiState.copy(paymentHistory = grouped)
+
+                val upcoming = calculateUpcomingPayments(settings)
+                uiState = uiState.copy(upcomingPayments = upcoming, isLoading = false)
+
+            } catch (e: Exception) {
+                e.printStackTrace()
+                uiState = uiState.copy(isLoading = false)
+            }
         }
     }
 
@@ -94,77 +99,100 @@ class PaymentsViewModel(
 
         val upcoming = mutableListOf<UpcomingPayment>()
 
-        // ---- Аванс 5-го числа ----
+        // ===== Аванс 5-го числа =====
         val advanceDate = LocalDate.of(currentMonth.year, currentMonth.month, 5)
-        if (advanceDate >= today) {
-            val periodStart = previousMonth.atDay(16)
-            val periodEnd = previousMonth.atEndOfMonth()
-            val advanceAmount = calculateSalaryForPeriod(periodStart, periodEnd, settings)
-            upcoming.add(
-                UpcomingPayment(
-                    id = "advance-${currentMonth}",
-                    title = "Аванс (5 ${currentMonth.month.getDisplayName(TextStyle.FULL, Locale("ru"))})",
-                    date = advanceDate,
-                    amount = advanceAmount
-                )
-            )
-        }
+        val advanceBase = calculateSalaryForPeriod(
+            start = previousMonth.atDay(16),
+            end = previousMonth.atEndOfMonth(),
+            settings = settings,
+            applyTax = true
+        )
+        // Доплаты: амортизация авто + разъездной характер (после налога)
+        val extrasNet = (settings.carDepreciation + settings.travelCompensation) *
+                (1 - settings.taxRatePercent / 100.0)
+        val advanceAmount = advanceBase + extrasNet
 
-        // ---- Зарплата 20-го числа ----
+        upcoming.add(
+            UpcomingPayment(
+                id = "advance-${currentMonth}",
+                title = "Аванс (5 ${currentMonth.month.getDisplayName(TextStyle.FULL, Locale("ru"))})",
+                date = advanceDate,
+                amount = advanceAmount,
+                description = "оклад за 16–${previousMonth.month.getDisplayName(TextStyle.FULL, Locale("ru"))} + доплаты",
+                isPast = advanceDate <= today
+            )
+        )
+
+        // ===== Зарплата 20-го числа =====
         val salaryDate = LocalDate.of(currentMonth.year, currentMonth.month, 20)
-        if (salaryDate >= today) {
-            // Оклад за 1-15 число текущего месяца
-            val salaryPeriodStart = currentMonth.atDay(1)
-            val salaryPeriodEnd = currentMonth.atDay(15)
-            val salaryPart = calculateSalaryForPeriod(salaryPeriodStart, salaryPeriodEnd, settings)
 
-            // Премия за прошлый месяц
-            val previousMonthStr = previousMonth.format(DateTimeFormatter.ofPattern("yyyy-MM"))
-            val earnedPoints = completedTaskRepository.getTotalPointsForMonth(previousMonthStr)
-            val planPoints = calculatePlanPointsForMonth(previousMonth, settings.dailyBonusNorm)
+        // Оклад за 1-15 без налога
+        val salaryPartGross = calculateSalaryForPeriod(
+            start = currentMonth.atDay(1),
+            end = currentMonth.atDay(15),
+            settings = settings,
+            applyTax = false
+        )
 
-            val bonusPercentRaw = if (planPoints > 0) {
-                ((earnedPoints.toDouble() / planPoints) * 100).coerceIn(0.0, 150.0)
-            } else 0.0
+        // Премия за прошлый месяц
+        val previousMonthStr = previousMonth.format(DateTimeFormatter.ofPattern("yyyy-MM"))
+        val earnedPoints = completedTaskRepository.getTotalPointsForMonth(previousMonthStr)
 
-            val bonusAmount = if (bonusPercentRaw >= 60) {
-                val previousMonthWorkedDays = getWorkedDaysForPeriod(
-                    previousMonth.atDay(1),
-                    previousMonth.atEndOfMonth()
-                )
-                val previousMonthWorkedHours = previousMonthWorkedDays * settings.shiftHours
-                val hourRate = (settings.salary * 12) / settings.yearNormHours
-                val previousMonthSalary = hourRate * previousMonthWorkedHours
-                previousMonthSalary * (bonusPercentRaw / 100.0)
-            } else 0.0
+        val previousMonthWorkDaysAll = workDayRepository.getDaysForMonthSync(previousMonthStr)
+            .filter { it.type == DayType.WORK }
+        val planPointsPrevious: Double = previousMonthWorkDaysAll.size * settings.dailyBonusNorm
 
-            val netAmount = (salaryPart + bonusAmount) * (1 - settings.taxRatePercent / 100.0)
-            val description = if (bonusAmount > 0) {
-                "Оклад за 1-15 + премия ${bonusPercentRaw.toInt()}% за ${previousMonth.month.getDisplayName(TextStyle.FULL, Locale("ru"))}"
-            } else {
-                "Оклад за 1-15 (премия не начислена)"
-            }
+        val bonusPercentRaw = if (planPointsPrevious > 0.0) {
+            (earnedPoints / planPointsPrevious) * 100
+        } else 0.0
+        val bonusPercent = bonusPercentRaw.coerceIn(0.0, 150.0)
 
-            upcoming.add(
-                UpcomingPayment(
-                    id = "salary-${currentMonth}",
-                    title = "Зарплата (20 ${currentMonth.month.getDisplayName(TextStyle.FULL, Locale("ru"))})",
-                    date = salaryDate,
-                    amount = netAmount,
-                    description = description
-                )
-            )
+        val hourRate = if (settings.yearNormHours > 0) {
+            (settings.salary * 12) / settings.yearNormHours
+        } else 0.0
+        val previousMonthSalaryGross = hourRate * (previousMonthWorkDaysAll.size * settings.shiftHours)
+
+        val bonusAmount = if (bonusPercent >= 60) {
+            previousMonthSalaryGross * (bonusPercent / 100.0)
+        } else 0.0
+
+        val totalGross = salaryPartGross + bonusAmount
+        val netAmount = totalGross * (1 - settings.taxRatePercent / 100.0)
+
+        val description = if (bonusAmount > 0) {
+            "оклад 1–15 + премия ${bonusPercent.toInt()}% за ${previousMonth.month.getDisplayName(TextStyle.FULL, Locale("ru"))}"
+        } else {
+            "оклад 1–15 (премия не начислена)"
         }
+
+        upcoming.add(
+            UpcomingPayment(
+                id = "salary-${currentMonth}",
+                title = "Зарплата (20 ${currentMonth.month.getDisplayName(TextStyle.FULL, Locale("ru"))})",
+                date = salaryDate,
+                amount = netAmount,
+                description = description,
+                isPast = salaryDate <= today
+            )
+        )
 
         return upcoming
     }
 
-    private suspend fun calculateSalaryForPeriod(start: LocalDate, end: LocalDate, settings: Settings): Double {
+    private suspend fun calculateSalaryForPeriod(
+        start: LocalDate,
+        end: LocalDate,
+        settings: Settings,
+        applyTax: Boolean = true
+    ): Double {
         val workedDays = getWorkedDaysForPeriod(start, end)
         val workedHours = workedDays * settings.shiftHours
-        val hourRate = (settings.salary * 12) / settings.yearNormHours
+        val hourRate = if (settings.yearNormHours > 0) {
+            (settings.salary * 12) / settings.yearNormHours
+        } else 0.0
         val gross = hourRate * workedHours
-        return gross * (1 - settings.taxRatePercent / 100.0)
+        val net = gross * (1 - settings.taxRatePercent / 100.0)
+        return if (applyTax) net else gross
     }
 
     private suspend fun getWorkedDaysForPeriod(start: LocalDate, end: LocalDate): Int {
@@ -179,13 +207,23 @@ class PaymentsViewModel(
         return count
     }
 
-    private fun calculatePlanPointsForMonth(yearMonth: YearMonth, dailyNorm: Double): Int {
-        var workDays = 0
-        for (day in 1..yearMonth.lengthOfMonth()) {
-            val date = yearMonth.atDay(day)
-            if (date.dayOfWeek.value in 1..5) workDays++
+    // ===== Фиксация фактической выплаты в истории =====
+    fun markPaymentAsReceived(
+        paymentType: PaymentType,
+        date: LocalDate,
+        amount: Double,
+        description: String
+    ) {
+        viewModelScope.launch {
+            val payment = Payment(
+                date = date.format(dateFormatter),
+                type = paymentType,
+                amount = amount,
+                description = description,
+                isActual = true
+            )
+            paymentRepository.insert(payment)
         }
-        return (workDays * dailyNorm).toInt()
     }
 
     fun addManualPayment(date: LocalDate, amount: Double, description: String) {

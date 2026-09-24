@@ -20,7 +20,7 @@ data class TasksUiState(
     val completedTasks: List<CompletedTask> = emptyList(),
     val selectedMonth: YearMonth = YearMonth.now(),
     val isLoading: Boolean = false,
-    val totalPointsForMonth: Int = 0
+    val totalPointsForMonth: Double = 0.0
 )
 
 class TasksViewModel(
@@ -29,6 +29,11 @@ class TasksViewModel(
 ) : ViewModel() {
 
     var uiState by mutableStateOf(TasksUiState())
+        private set
+
+    var showDeleteWarning by mutableStateOf(false)
+        private set
+    var taskTypeToDelete by mutableStateOf<TaskType?>(null)
         private set
 
     private val dateFormatter = DateTimeFormatter.ISO_LOCAL_DATE
@@ -45,16 +50,13 @@ class TasksViewModel(
     private fun loadData() {
         viewModelScope.launch {
             uiState = uiState.copy(isLoading = true)
-            // Однократно загружаем типы заявок (не блокируем корутину)
             val types = taskTypeRepository.getAllTaskTypes().first()
             uiState = uiState.copy(taskTypes = types)
-            // Загружаем выполненные заявки
             loadCompletedTasks()
             uiState = uiState.copy(isLoading = false)
         }
     }
 
-    // Принудительная перезагрузка типов (после добавления/редактирования/удаления)
     private fun loadTaskTypes() {
         viewModelScope.launch {
             val types = taskTypeRepository.getAllTaskTypes().first()
@@ -75,37 +77,33 @@ class TasksViewModel(
         }
     }
 
-    fun addTaskType(name: String, pointsPerUnit: Int) {
+    fun addTaskType(name: String, pointsPerUnit: Double) {
         viewModelScope.launch {
-            val newType = TaskType(
-                name = name,
-                pointsPerUnit = pointsPerUnit,
-                isActive = true
-            )
+            val newType = TaskType(name = name, pointsPerUnit = pointsPerUnit, isActive = true)
             taskTypeRepository.insert(newType)
-            loadTaskTypes() // обновляем список типов
+            loadTaskTypes()
         }
     }
 
     fun updateTaskType(taskType: TaskType) {
         viewModelScope.launch {
             taskTypeRepository.update(taskType)
-            loadTaskTypes() // обновляем список типов
+            loadTaskTypes()
         }
     }
 
     fun deleteTaskType(taskType: TaskType) {
         viewModelScope.launch {
-            // Проверяем, используется ли этот тип в выполненных заявках (за текущий месяц — достаточно)
             val monthStr = uiState.selectedMonth.format(DateTimeFormatter.ofPattern("yyyy-MM"))
             val completed = completedTaskRepository.getTasksForMonthFlow(monthStr).first()
             val isUsed = completed.any { it.taskTypeId == taskType.id }
             if (isUsed) {
-                // TODO: показать сообщение, что нельзя удалить (можно добавить Snackbar)
-                return@launch
+                taskTypeToDelete = taskType
+                showDeleteWarning = true
+            } else {
+                taskTypeRepository.delete(taskType)
+                loadTaskTypes()
             }
-            taskTypeRepository.delete(taskType)
-            loadTaskTypes() // обновляем список типов
         }
     }
 
@@ -119,7 +117,6 @@ class TasksViewModel(
                 description = description
             )
             completedTaskRepository.insert(completedTask)
-            // Принудительно перезагружаем список заявок за текущий месяц
             loadCompletedTasks()
         }
     }
@@ -129,5 +126,10 @@ class TasksViewModel(
             completedTaskRepository.delete(completedTask)
             loadCompletedTasks()
         }
+    }
+
+    fun cancelDelete() {
+        taskTypeToDelete = null
+        showDeleteWarning = false
     }
 }

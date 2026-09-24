@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import ru.dohod.moidohod.data.entity.Settings
+import ru.dohod.moidohod.data.entity.WorkSchedule
 import ru.dohod.moidohod.data.repository.SettingsRepository
 
 class SettingsViewModel(
@@ -38,21 +39,27 @@ class SettingsViewModel(
     fun saveSettings(
         salary: Double,
         yearNormHours: Int,
-        dailyBonusNorm: Double,
-        taxRatePercent: Int
+        taxRatePercent: Int,
+        schedule: WorkSchedule,
+        carDepreciation: Double,
+        travelCompensation: Double
     ) {
         viewModelScope.launch {
             val current = _settings.value
             val settingsToSave = current?.copy(
                 salary = salary,
                 yearNormHours = yearNormHours,
-                dailyBonusNorm = dailyBonusNorm,
-                taxRatePercent = taxRatePercent
+                taxRatePercent = taxRatePercent,
+                schedule = schedule,
+                carDepreciation = carDepreciation,
+                travelCompensation = travelCompensation
             ) ?: Settings(
                 salary = salary,
                 yearNormHours = yearNormHours,
-                dailyBonusNorm = dailyBonusNorm,
-                taxRatePercent = taxRatePercent
+                taxRatePercent = taxRatePercent,
+                schedule = schedule,
+                carDepreciation = carDepreciation,
+                travelCompensation = travelCompensation
             )
             repository.saveSettings(settingsToSave)
             _saveCompleted.value = true

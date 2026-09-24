@@ -65,13 +65,26 @@ fun PaymentsScreen(
             }
 
             when (selectedTabIndex) {
-                0 -> UpcomingPaymentsTab(uiState.upcomingPayments)
+                0 -> UpcomingPaymentsTab(
+                    upcoming = uiState.upcomingPayments,
+                    onMarkReceived = { payment ->
+                        val type = if (payment.id.startsWith("advance"))
+                            PaymentType.ADVANCE
+                        else
+                            PaymentType.SALARY
+                        viewModel.markPaymentAsReceived(
+                            paymentType = type,
+                            date = payment.date,
+                            amount = payment.amount,
+                            description = payment.description
+                        )
+                    }
+                )
                 1 -> PaymentHistoryTab(uiState.paymentHistory, viewModel)
             }
         }
     }
 
-    // Диалог добавления ручной выплаты
     if (showAddPaymentDialog) {
         AddManualPaymentDialog(
             onDismiss = { showAddPaymentDialog = false },
@@ -84,7 +97,10 @@ fun PaymentsScreen(
 }
 
 @Composable
-fun UpcomingPaymentsTab(upcoming: List<UpcomingPayment>) {
+fun UpcomingPaymentsTab(
+    upcoming: List<UpcomingPayment>,
+    onMarkReceived: (UpcomingPayment) -> Unit
+) {
     val currencyFormat = remember { NumberFormat.getCurrencyInstance(Locale("ru", "RU")) }
     val dateFormatter = remember { DateTimeFormatter.ofPattern("d MMM yyyy", Locale("ru")) }
 
@@ -109,41 +125,52 @@ fun UpcomingPaymentsTab(upcoming: List<UpcomingPayment>) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        containerColor = if (payment.isPast)
+                            MaterialTheme.colorScheme.primaryContainer
+                        else
+                            MaterialTheme.colorScheme.surfaceVariant
                     )
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(16.dp)
                     ) {
-                        Column {
+                        Text(
+                            text = payment.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = payment.date.format(dateFormatter),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (payment.description.isNotBlank()) {
                             Text(
-                                text = payment.title,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = payment.date.format(dateFormatter),
+                                text = payment.description,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.primary
                             )
-                            if (payment.description.isNotBlank()) {
-                                Text(
-                                    text = payment.description,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = currencyFormat.format(payment.amount),
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            if (payment.isPast) {
+                                Button(onClick = { onMarkReceived(payment) }) {
+                                    Text("Получено")
+                                }
                             }
                         }
-                        Text(
-                            text = currencyFormat.format(payment.amount),
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
                     }
                 }
             }
@@ -192,7 +219,8 @@ fun PaymentHistoryTab(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = group.month.format(monthFormatter).replaceFirstChar { it.titlecase(Locale("ru")) },
+                                text = group.month.format(monthFormatter)
+                                    .replaceFirstChar { it.titlecase(Locale("ru")) },
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
@@ -226,7 +254,9 @@ fun PaymentHistoryTab(
                                     )
                                     Text(
                                         text = "${LocalDate.parse(payment.date).format(dateFormatter)}" +
-                                                if (payment.description.isNotBlank()) " • ${payment.description}" else "",
+                                                if (payment.description.isNotBlank())
+                                                    " • ${payment.description}"
+                                                else "",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -269,20 +299,19 @@ fun AddManualPaymentDialog(
     onDismiss: () -> Unit,
     onSave: (date: LocalDate, amount: Double, description: String) -> Unit
 ) {
-    var dateText by remember { mutableStateOf(LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)) }
+    var dateText by remember {
+        mutableStateOf(LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE))
+    }
     var amountText by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
 
-    val isFormValid = remember(amountText) {
-        amountText.toDoubleOrNull()?.let { it > 0 } == true
-    }
+    val isFormValid = amountText.toDoubleOrNull()?.let { it > 0 } == true
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Добавить ручную выплату") },
         text = {
             Column {
-                // Дата
                 OutlinedTextField(
                     value = dateText,
                     onValueChange = { dateText = it },
@@ -292,10 +321,7 @@ fun AddManualPaymentDialog(
                     isError = runCatching { LocalDate.parse(dateText) }.isFailure,
                     modifier = Modifier.fillMaxWidth()
                 )
-
                 Spacer(modifier = Modifier.height(8.dp))
-
-                // Сумма
                 OutlinedTextField(
                     value = amountText,
                     onValueChange = { amountText = it },
@@ -303,13 +329,10 @@ fun AddManualPaymentDialog(
                     placeholder = { Text("15000") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    isError = amountText.isNotBlank() && amountText.toDoubleOrNull()?.let { it <= 0 } ?: true,
+                    isError = amountText.isNotBlank() && (amountText.toDoubleOrNull()?.let { it <= 0 } ?: true),
                     modifier = Modifier.fillMaxWidth()
                 )
-
                 Spacer(modifier = Modifier.height(8.dp))
-
-                // Описание
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },

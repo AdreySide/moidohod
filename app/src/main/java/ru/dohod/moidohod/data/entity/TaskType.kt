@@ -1,6 +1,5 @@
 package ru.dohod.moidohod.data.entity
 
-
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -8,6 +7,6 @@ import androidx.room.PrimaryKey
 data class TaskType(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val name: String,
-    val pointsPerUnit: Int,
+    val pointsPerUnit: Double,
     val isActive: Boolean = true
 )

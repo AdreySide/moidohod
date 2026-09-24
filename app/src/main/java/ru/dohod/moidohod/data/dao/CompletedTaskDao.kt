@@ -16,5 +16,5 @@ interface CompletedTaskDao {
     suspend fun delete(completedTask: CompletedTask)
 
     @Query("SELECT SUM(totalPoints) FROM completed_tasks WHERE date LIKE :yearMonth || '%'")
-    suspend fun getTotalPointsForMonth(yearMonth: String): Int?
+    suspend fun getTotalPointsForMonth(yearMonth: String): Double?
 }

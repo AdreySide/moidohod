@@ -16,6 +16,11 @@ class Converters {
     fun fromDayType(type: DayType): String = type.name
     @TypeConverter
     fun toDayType(name: String): DayType = DayType.valueOf(name)
+
+    @TypeConverter
+    fun fromWorkSchedule(schedule: WorkSchedule): String = schedule.name
+    @TypeConverter
+    fun toWorkSchedule(name: String): WorkSchedule = WorkSchedule.valueOf(name)
 }
 
 @Database(
@@ -24,9 +29,9 @@ class Converters {
         WorkDay::class,
         TaskType::class,
         CompletedTask::class,
-        Payment::class      // ← обязательно добавить!
+        Payment::class
     ],
-    version = 5,            // ← версия 5!
+    version = 7,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -35,13 +40,12 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun workDayDao(): WorkDayDao
     abstract fun taskTypeDao(): TaskTypeDao
     abstract fun completedTaskDao(): CompletedTaskDao
-    abstract fun paymentDao(): PaymentDao   // ← добавить!
+    abstract fun paymentDao(): PaymentDao
 
     companion object {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
-        // Миграция 1→2
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("""
@@ -54,14 +58,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // Миграция 2→3
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("""
                     CREATE TABLE IF NOT EXISTS `task_types` (
                         `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
                         `name` TEXT NOT NULL,
-                        `pointsPerUnit` INTEGER NOT NULL,
+                        `pointsPerUnit` REAL NOT NULL,
                         `isActive` INTEGER NOT NULL
                     )
                 """.trimIndent())
@@ -71,29 +74,27 @@ abstract class AppDatabase : RoomDatabase() {
                         `date` TEXT NOT NULL,
                         `taskTypeId` INTEGER NOT NULL,
                         `quantity` INTEGER NOT NULL,
-                        `totalPoints` INTEGER NOT NULL
+                        `totalPoints` REAL NOT NULL
                     )
                 """.trimIndent())
                 db.execSQL("""
                     INSERT OR IGNORE INTO task_types (name, pointsPerUnit, isActive)
                     VALUES 
-                        ('Техничка', 1, 1),
-                        ('Подключка', 2, 1),
-                        ('Дозаказ', 1, 1),
-                        ('ГП выполнено', 2, 1),
-                        ('ГП перевел', 1, 1)
+                        ('Техничка', 1.0, 1),
+                        ('Подключка', 2.0, 1),
+                        ('Дозаказ', 1.0, 1),
+                        ('ГП выполнено', 2.0, 1),
+                        ('ГП перевел', 1.0, 1)
                 """.trimIndent())
             }
         }
 
-        // Миграция 3→4
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `completed_tasks` ADD COLUMN `description` TEXT NOT NULL DEFAULT ''")
             }
         }
 
-        // ✅ МИГРАЦИЯ 4→5 (добавляем таблицу payments)
         val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("""
@@ -111,6 +112,19 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `settings` ADD COLUMN `schedule` TEXT NOT NULL DEFAULT 'FIVE_TWO'")
+            }
+        }
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `settings` ADD COLUMN `carDepreciation` REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE `settings` ADD COLUMN `travelCompensation` REAL NOT NULL DEFAULT 0.0")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -122,7 +136,9 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_1_2,
                         MIGRATION_2_3,
                         MIGRATION_3_4,
-                        MIGRATION_4_5   // ← обязательно добавить!
+                        MIGRATION_4_5,
+                        MIGRATION_5_6,
+                        MIGRATION_6_7
                     )
                     .build()
                 INSTANCE = instance

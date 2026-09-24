@@ -9,6 +9,6 @@ data class CompletedTask(
     val date: String,
     val taskTypeId: Int,
     val quantity: Int,
-    val totalPoints: Int,
+    val totalPoints: Double,
     val description: String = ""
 )

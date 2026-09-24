@@ -6,7 +6,6 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import ru.dohod.moidohod.data.entity.DayType
 import ru.dohod.moidohod.data.entity.Settings
@@ -19,15 +18,17 @@ import java.time.format.DateTimeFormatter
 
 data class DashboardData(
     val bonusPercent: Int = 0,
-    val earnedPoints: Int = 0,
-    val planPoints: Int = 0,
+    val earnedPoints: Double = 0.0,
+    val planPoints: Double = 0.0,
     val remainingWorkDays: Int = 0,
     val workedDays: Int = 0,
     val workedHours: Int = 0,
     val monthNormHours: Int = 0,
     val salaryBase: Double = 0.0,
     val bonusAmount: Double = 0.0,
-    val total: Double = 0.0
+    val total: Double = 0.0,
+    val advance5Amount: Double = 0.0,
+    val salary20Amount: Double = 0.0
 )
 
 class DashboardViewModel(
@@ -45,28 +46,37 @@ class DashboardViewModel(
     private val dateFormatter = DateTimeFormatter.ISO_LOCAL_DATE
     private val currentYearMonth = YearMonth.now()
     private val yearMonthStr = currentYearMonth.format(DateTimeFormatter.ofPattern("yyyy-MM"))
+    private val previousYearMonth = currentYearMonth.minusMonths(1)
+    private val previousMonthStr = previousYearMonth.format(DateTimeFormatter.ofPattern("yyyy-MM"))
 
-    init {
-        observeData()
-    }
+    init { observeData() }
 
-    fun refresh() {
-        observeData()
-    }
+    fun refresh() { observeData() }
 
     private fun observeData() {
         viewModelScope.launch {
             isLoading = true
+            val settingsFlow = settingsRepository.getSettings()
+            val currentMonthFlow = workDayRepository.getDaysForMonthFlow(yearMonthStr)
+            val currentPointsFlow = completedTaskRepository.getTotalPointsForMonthFlow(yearMonthStr)
+            val previousMonthFlow = workDayRepository.getDaysForMonthFlow(previousMonthStr)
+            val previousPointsFlow = completedTaskRepository.getTotalPointsForMonthFlow(previousMonthStr)
 
             combine(
-                settingsRepository.getSettings(),
-                workDayRepository.getDaysForMonthFlow(yearMonthStr),
-                completedTaskRepository.getTotalPointsForMonthFlow(yearMonthStr)
-            ) { settings, workDays, earnedPoints ->
-                val currentSettings = settings ?: Settings().also {
-                    settingsRepository.saveSettings(it)
-                }
-                calculateDashboardData(currentSettings, workDays, earnedPoints)
+                settingsFlow,
+                currentMonthFlow,
+                currentPointsFlow,
+                previousMonthFlow,
+                previousPointsFlow
+            ) { settings, workDays, earnedPoints, previousWorkDays, previousPoints ->
+                val currentSettings = settings ?: Settings().also { settingsRepository.saveSettings(it) }
+                calculateDashboardData(
+                    settings = currentSettings,
+                    workDays = workDays,
+                    earnedPoints = earnedPoints,
+                    previousMonthWorkDays = previousWorkDays,
+                    previousMonthPoints = previousPoints
+                )
             }.collect { data ->
                 dashboardData = data
                 isLoading = false
@@ -77,52 +87,48 @@ class DashboardViewModel(
     private fun calculateDashboardData(
         settings: Settings,
         workDays: List<ru.dohod.moidohod.data.entity.WorkDay>,
-        earnedPoints: Int
+        earnedPoints: Double,
+        previousMonthWorkDays: List<ru.dohod.moidohod.data.entity.WorkDay>,
+        previousMonthPoints: Double
     ): DashboardData {
         val today = LocalDate.now()
-        val yearMonth = YearMonth.from(today)
 
-        // Отработанные дни (WORK и дата ≤ сегодня)
-        val workedDays = workDays.filter {
-            it.type == DayType.WORK && LocalDate.parse(it.date, dateFormatter) <= today
-        }.size
+        val allWorkDays = workDays.filter { it.type == DayType.WORK }
+        val workedDays = allWorkDays.count {
+            LocalDate.parse(it.date, dateFormatter) <= today
+        }
+        val planWorkDays = allWorkDays.size
+
         val workedHours = workedDays * settings.shiftHours
+        val monthNormHours = planWorkDays * settings.shiftHours
 
-        // Норма часов за месяц
-        val monthNormHours = (settings.yearNormHours / 12).coerceAtLeast(1)
+        val hourRate = if (settings.yearNormHours > 0) {
+            (settings.salary * 12) / settings.yearNormHours
+        } else 0.0
 
-        // Окладная часть
-        val hourRate = (settings.salary * 12) / settings.yearNormHours
         val salaryBase = hourRate * workedHours
 
-        // План баллов на месяц (все будние дни)
-        val totalWorkDaysInMonth = (1..yearMonth.lengthOfMonth()).count { day ->
-            yearMonth.atDay(day).dayOfWeek.value in 1..5
-        }
-        val planPointsDouble = totalWorkDaysInMonth * settings.dailyBonusNorm
-        val planPoints = planPointsDouble.toInt()
+        // planPoints — Double
+        val planPoints: Double = planWorkDays * settings.dailyBonusNorm
 
-        // Процент выполнения плана (для кружка) — 0..150
-        val bonusPercent = if (planPointsDouble > 0) {
-            ((earnedPoints / planPointsDouble) * 100)
-                .coerceIn(0.0, 150.0)
-                .toInt()
+        val bonusPercent = if (planPoints > 0.0) {
+            ((earnedPoints / planPoints) * 100).coerceIn(0.0, 150.0).toInt()
         } else 0
 
-        // Сумма премии к начислению — только если процент ≥ 60
         val bonusAmount = if (bonusPercent >= 60) {
             salaryBase * (bonusPercent / 100.0)
         } else 0.0
 
-        // Итого: оклад + премия (если она >0, иначе только оклад)
         val total = salaryBase + bonusAmount
 
-        // Остаток рабочих дней
-        val remainingWorkDays = if (today.dayOfMonth < yearMonth.lengthOfMonth()) {
-            (today.dayOfMonth + 1..yearMonth.lengthOfMonth()).count { day ->
-                yearMonth.atDay(day).dayOfWeek.value in 1..5
-            }
-        } else 0
+        val remainingWorkDays = allWorkDays.count {
+            LocalDate.parse(it.date, dateFormatter) > today
+        }
+
+        val advanceNet = calculateAdvance(settings, previousMonthWorkDays, hourRate)
+        val salary20Net = calculateSalary20(
+            settings, workDays, previousMonthWorkDays, previousMonthPoints, hourRate
+        )
 
         return DashboardData(
             bonusPercent = bonusPercent,
@@ -134,7 +140,68 @@ class DashboardViewModel(
             monthNormHours = monthNormHours,
             salaryBase = salaryBase,
             bonusAmount = bonusAmount,
-            total = total
+            total = total,
+            advance5Amount = advanceNet,
+            salary20Amount = salary20Net
         )
+    }
+
+    private fun calculateAdvance(
+        settings: Settings,
+        previousMonthWorkDays: List<ru.dohod.moidohod.data.entity.WorkDay>,
+        hourRate: Double
+    ): Double {
+        val previousYearMonth = currentYearMonth.minusMonths(1)
+        val start = previousYearMonth.atDay(16)
+        val end = previousYearMonth.atEndOfMonth()
+        val workedDays = previousMonthWorkDays.count {
+            val date = LocalDate.parse(it.date, dateFormatter)
+            it.type == DayType.WORK && date in start..end
+        }
+        val hours = workedDays * settings.shiftHours
+        val gross = hourRate * hours
+        val net = gross * (1 - settings.taxRatePercent / 100.0)
+        val extrasNet = (settings.carDepreciation + settings.travelCompensation) *
+                (1 - settings.taxRatePercent / 100.0)
+        return net + extrasNet
+    }
+
+    private fun calculateSalary20(
+        settings: Settings,
+        currentMonthWorkDays: List<ru.dohod.moidohod.data.entity.WorkDay>,
+        previousMonthWorkDays: List<ru.dohod.moidohod.data.entity.WorkDay>,
+        previousMonthPoints: Double,
+        hourRate: Double
+    ): Double {
+        val currentYearMonth = YearMonth.now()
+        val previousYearMonth = currentYearMonth.minusMonths(1)
+
+        val startSalary = currentYearMonth.atDay(1)
+        val endSalary = currentYearMonth.atDay(15)
+        val salaryWorkedDays = currentMonthWorkDays.count {
+            val date = LocalDate.parse(it.date, dateFormatter)
+            it.type == DayType.WORK && date in startSalary..endSalary
+        }
+        val salaryHours = salaryWorkedDays * settings.shiftHours
+        val salaryGross = hourRate * salaryHours
+
+        val previousMonthWorkedDaysAll = previousMonthWorkDays.filter { it.type == DayType.WORK }
+        // planPointsPrevious — Double, потому что dailyBonusNorm Double
+        val planPointsPrevious: Double = previousMonthWorkedDaysAll.size * settings.dailyBonusNorm
+
+        val bonusPercentRaw = if (planPointsPrevious > 0.0) {
+            (previousMonthPoints / planPointsPrevious) * 100
+        } else 0.0
+        val bonusPercent = bonusPercentRaw.coerceIn(0.0, 150.0)
+
+        val previousMonthHours = previousMonthWorkedDaysAll.size * settings.shiftHours
+        val previousMonthSalaryGross = hourRate * previousMonthHours
+
+        val bonusAmount = if (bonusPercent >= 60) {
+            previousMonthSalaryGross * (bonusPercent / 100.0)
+        } else 0.0
+
+        val totalGross = salaryGross + bonusAmount
+        return totalGross * (1 - settings.taxRatePercent / 100.0)
     }
 }
